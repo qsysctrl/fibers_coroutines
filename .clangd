@@ -1,0 +1,25 @@
+CompileFlags:
+  Add:
+    - -xc
+    - -std=c2x
+    - -Wall
+    - -Wextra
+    - -Wpedantic
+    - -Wformat=2
+    - -Wshadow
+    - -Wwrite-strings
+    - -Wstrict-prototypes
+    - -Wold-style-definition
+    - -Wredundant-decls
+    - -Wnested-externs
+    - -Wconversion
+    - -Wimplicit-fallthrough
+    - -Werror=format-security
+    - -U_FORTIFY_SOURCE
+    - -D_FORTIFY_SOURCE=3
+    - -fstrict-flex-arrays=3
+    - -fstack-clash-protection
+    - -fstack-protector-strong
+    - -Isrc
+    - -Itests
+    - -Itracy/public
