@@ -4,46 +4,75 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "coro.h"
+#include "context.h"
+#include "fibers_N_1.h"
 
-void foo(coro_t* c) {
-  printf("coro: step 2\n");
 
-  coro_suspend(c);
+void test_queue() {
+  struct scheduler s = {};
 
-  printf("coro: step 4\n");
+  assert(s.run_queue.head == nullptr);
+  assert(s.run_queue.tail == nullptr);
+  assert(s.run_queue.count == 0);
 
-  printf("coro: end\n");
-}
+  struct execution_context* ctx = malloc(sizeof(struct execution_context));
+  assert(ctx != nullptr);
+  
+  queue_push(&s.run_queue, ctx);
+  
+  assert(s.run_queue.head != nullptr);
+  assert(s.run_queue.tail != nullptr);
+  assert(s.run_queue.tail == s.run_queue.head);
+  
+  struct execution_context* ctx2 = malloc(sizeof(struct execution_context));
+  assert(ctx2 != nullptr);
+  queue_push(&s.run_queue, ctx2);
+  assert(s.run_queue.head != nullptr);
+  assert(s.run_queue.tail != nullptr);
+  assert(s.run_queue.tail != s.run_queue.head);
+  assert(s.run_queue.head->next == s.run_queue.tail);
+  assert(s.run_queue.tail->prev == s.run_queue.head);
+  assert(s.run_queue.count == 2);
 
-constexpr int arr_size = 10;
-constexpr int arr[arr_size] = {
-  1, 2, 3, 4, 5, 6, 7, 8, 9, 10
-};
-void coro1_array_process(coro_t* c) {
-  for (int i = 0; i < arr_size; i += 2) {
-    printf("coro1: array element %d == %d;\n", i, arr[i]);
-    coro_suspend(c);
+  struct execution_context* ctx3 = malloc(sizeof(struct execution_context));
+  assert(ctx3 != nullptr);
+  queue_push(&s.run_queue, ctx3);
+  assert(s.run_queue.head != nullptr);
+  assert(s.run_queue.tail != nullptr);
+  assert(s.run_queue.tail != s.run_queue.head);
+  assert(s.run_queue.head->next != s.run_queue.tail);
+  assert(s.run_queue.tail->prev != s.run_queue.head);
+  assert(s.run_queue.head->next == s.run_queue.tail->prev);
+  assert(s.run_queue.count == 3);
+
+  int idx = 0;
+  for(struct queue_node* node = s.run_queue.head; node != nullptr; node = node->next) {
+    if (idx == 0) {
+      assert(node->fiber == ctx);
+    }
+    else if (idx == 1) {
+      assert(node->fiber == ctx2);
+    }
+    else if (idx == 2) {
+      assert(node->fiber == ctx3);
+    }
+
+    ++idx;
   }
-}
-void main_array_process(coro_t* c) {
-  for (int i = 1; i < arr_size; i += 2) {
-    coro_resume(c);
-    printf("main: array element %d == %d;\n", i, arr[i]);
-  }
+
+  struct execution_context* popped = queue_pop(&s.run_queue);
+  assert(s.run_queue.count == 2);
+  assert(s.run_queue.head != nullptr);
+  assert(s.run_queue.tail != nullptr);
+  assert(s.run_queue.head->fiber != ctx);
+  assert(popped == ctx);
+  assert(s.run_queue.tail != s.run_queue.head);
+  assert(s.run_queue.head->next == s.run_queue.tail);
+  assert(s.run_queue.tail->prev == s.run_queue.head);
 }
 
 int main() {
-  auto coro1 = allocate_coro(&coro1_array_process);
-
-  coro_resume(coro1);
-
-  main_array_process(coro1);
-
-  if (coro_resume(coro1) == false) {
-    printf("Cororoutine completed");
-    free_coro(coro1);
-  }
+  fibers_N_1_example();
 
   return 0;
 }

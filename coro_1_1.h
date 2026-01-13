@@ -1,5 +1,5 @@
-#ifndef CORO_H
-#define CORO_H
+#ifndef CORO_1_1_H
+#define CORO_1_1_H
 
 /*
  * 1:1 coroutines
@@ -57,4 +57,34 @@ void free_coro(coro_t* c) {
   free(c);
 }
 
-#endif // #ifndef CORO_H
+constexpr int arr_size = 10;
+constexpr int arr[arr_size] = {
+  1, 2, 3, 4, 5, 6, 7, 8, 9, 10
+};
+void coro1_array_process(coro_t* c) {
+  for (int i = 0; i < arr_size; i += 2) {
+    printf("coro1: array element %d == %d;\n", i, arr[i]);
+    coro_suspend(c);
+  }
+}
+void main_array_process(coro_t* c) {
+  for (int i = 1; i < arr_size; i += 2) {
+    coro_resume(c);
+    printf("main: array element %d == %d;\n", i, arr[i]);
+  }
+}
+
+void coro_1_1_example() {
+  auto coro1 = allocate_coro(&coro1_array_process);
+
+  coro_resume(coro1);
+
+  main_array_process(coro1);
+
+  if (coro_resume(coro1) == false) {
+    printf("Cororoutine completed");
+    free_coro(coro1);
+  }
+}
+
+#endif // #ifndef CORO_1_1_H
