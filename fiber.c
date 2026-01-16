@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <threads.h>
 
 #include "context.h"
 #include "queue.h"
@@ -20,13 +21,13 @@ void test_queue() {
 
   int* first = malloc(sizeof(int));
   assert(first != nullptr);
-  
+
   queue_push(&queue, first);
-  
+
   assert(queue.head != nullptr);
   assert(queue.tail != nullptr);
   assert(queue.tail == queue.head);
-  
+
   int* second = malloc(sizeof(int));
   assert(second != nullptr);
 
@@ -74,7 +75,7 @@ void test_queue() {
   assert(queue.tail != queue.head);
   assert(queue.head->next == queue.tail);
   assert(queue.tail->prev == queue.head);
-  
+
   payload_t* popped2 = queue_pop(&queue);
   assert(queue.head != nullptr);
   assert(queue.tail != nullptr);
@@ -93,36 +94,47 @@ void test_queue() {
 }
 
 void bar1(struct execution_context* ctx) {
+  printf("bar1 running on thread %zu\n", thrd_current());
   for (int i = 0; i < 10; ++i) {
     thrd_sleep(&(struct timespec){.tv_nsec = 500000000 }, NULL);
     printf("bar1\n");
     yield(ctx);
   }
+  printf("bar1 complete\n");
 }
 
 void bar2(struct execution_context* ctx) {
+  printf("bar2 running on thread %zu\n", thrd_current());
   for (int i = 0; i < 10; ++i) {
     thrd_sleep(&(struct timespec){.tv_nsec = 500000000 }, NULL);
     printf("bar2\n");
     yield(ctx);
   }
+  printf("bar2 complete\n");
 }
 
 void bar3(struct execution_context* ctx) {
+  printf("bar3 running on thread %zu\n", thrd_current());
   for (int i = 0; i < 10; ++i) {
     thrd_sleep(&(struct timespec){.tv_nsec = 500000000 }, NULL);
     printf("bar3\n");
     yield(ctx);
   }
+  printf("bar3 complete\n");
 }
 
 void foo(struct execution_context* ctx) {
-  printf("foo\n");
+  printf("foo running on %zu\n", thrd_current());
 
   start(bar1);
+  yield(ctx);
+
   start(bar2);
+  yield(ctx);
+
   start(bar3);
-  
+  yield(ctx);
+
   printf("foo finish\n");
 }
 
@@ -131,7 +143,7 @@ int main() {
 
   runtime_start(rt);
 
-  thrd_sleep(&(struct timespec){.tv_sec = 1 }, NULL);
+  thrd_sleep(&(struct timespec){.tv_sec = 2 }, NULL);
 
   printf("main\n");
 
@@ -143,4 +155,3 @@ int main() {
 
   return 0;
 }
-

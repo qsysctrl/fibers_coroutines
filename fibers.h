@@ -28,7 +28,7 @@ struct scheduler {
 struct processor {
   struct queue local_run_queue; // executable fibers
   struct queue free_list; // free fibers (after completion of the execution)
-  struct scheduler* current_sched; // associated thread
+  struct scheduler* current_thread; // associated thread
   struct runtime* rt;
   // when execution is blocked by syscall, we switch to
   // machine
@@ -38,9 +38,10 @@ struct processor {
 struct runtime {
   struct queue global_run_queue;
   struct processor* procs; // PROCS_MAX = user defined maximum number of processors
-  struct scheduler* scheds;
+  // struct scheduler* scheds;
+  thrd_t* threads;
   size_t procs_count; // length of the `procs` array
-  size_t scheds_count; // length of the `scheds` array
+  size_t threads_count; // length of the `scheds` array
   size_t parked_count;
   bool shutdown_flag;
   mtx_t grq_mtx;
@@ -66,7 +67,6 @@ void _fiber_trampoline(void*, void*, void*, void*, void*, void*, fiber_t* fb) {
   fb->_user(fb);
   fb->_is_done = true;
   _fiber_switch_to_scheduler(fb);
-  // swap_context(&ctx->_ctx, &ctx->_caller_ctx); // switch to scheduler
 }
 
 struct execution_context* _allocate_fiber(fiber_f f) {
@@ -122,9 +122,9 @@ fiber_t* _scheduler_get_executable_fiber(struct scheduler* sched) {
   if ((fb = queue_pop(&sched->proc->rt->global_run_queue)) == nullptr) {
     sched->proc->rt->parked_count += 1;
 
-    assert(sched->proc->rt->parked_count <= sched->proc->rt->scheds_count);
+    assert(sched->proc->rt->parked_count <= sched->proc->rt->threads_count);
 
-    if (sched->proc->rt->parked_count == sched->proc->rt->scheds_count) {
+    if (sched->proc->rt->parked_count == sched->proc->rt->threads_count) {
       sched->proc->rt->parked_count -= 1;
       mtx_unlock(grq_mtx);
       return nullptr;
@@ -151,7 +151,7 @@ void _runtime_bind_proc_to_sched(struct runtime* rt, struct scheduler* binding_s
   static size_t proc_idx = 0;
 
   binding_sched->proc = &rt->procs[proc_idx];
-  rt->procs[proc_idx].current_sched = binding_sched;
+  rt->procs[proc_idx].current_thread = binding_sched;
 
   ++proc_idx;
   if (proc_idx == rt->procs_count) {
@@ -181,23 +181,13 @@ int _scheduler_start_loop(void* rt) {
   return 0;
 }
 
-
-// void _runtime_init_schedulers(struct runtime* rt) {
-//   assert(rt != nullptr);
-
-//   for (size_t i = 0; i < rt->scheds_count; ++i) {
-//     // associate scheds with some procs
-//     _runtime_bind_proc_to_sched(rt, &rt->scheds[i]);
-//   }
-// }
-
 void _runtime_init_procs(struct runtime* rt) {
   assert(rt != nullptr);
   assert(rt->procs != nullptr);
 
   for (size_t i = 0; i < rt->procs_count; ++i) {
     struct processor* const proc = &(rt->procs[i]);
-    
+
     proc->rt = rt;
   }
 }
@@ -211,8 +201,8 @@ struct runtime* allocate_runtime(fiber_f start_f) {
   memcpy(rt, &(struct runtime) {
     // Equals for now
     .procs_count = (size_t)nps,
-    .scheds_count = (size_t)nps,
-    
+    .threads_count = (size_t)nps,
+
     .shutdown_flag = false,
 
   }, sizeof(struct runtime));
@@ -222,23 +212,23 @@ struct runtime* allocate_runtime(fiber_f start_f) {
     perror("allocate_runtime() calloc error");
     exit(EXIT_FAILURE);
   }
-  rt->scheds = calloc(rt->scheds_count, sizeof(struct scheduler));
-  if (rt->scheds == nullptr) {
+  rt->threads = calloc(rt->threads_count, sizeof(struct scheduler));
+  if (rt->threads == nullptr) {
     free(rt->procs);
     perror("allocate_runtime() calloc error");
     exit(EXIT_FAILURE);
   }
-  
+
   if (mtx_init(&rt->grq_mtx, mtx_plain) == thrd_error) {
     free(rt->procs);
-    free(rt->scheds);
+    free(rt->threads);
 
     fprintf(stderr, "mtx_init error\n");
     exit(EXIT_FAILURE);
   }
   if (cnd_init(&rt->grq_cnd) == thrd_error) {
     free(rt->procs);
-    free(rt->scheds);
+    free(rt->threads);
     mtx_destroy(&rt->grq_mtx);
 
     fprintf(stderr, "cnd_init() error\n"); // TODO
@@ -248,11 +238,8 @@ struct runtime* allocate_runtime(fiber_f start_f) {
   fiber_t* start_fb = _allocate_fiber(start_f);
   queue_push(&rt->global_run_queue, start_fb);
 
-  // _runtime_init_schedulers(rt);
   _runtime_init_procs(rt);
 
-  assert(rt->procs != nullptr);
-  assert(rt->scheds != nullptr);
   assert(rt->global_run_queue.head != nullptr);
   assert(rt->shutdown_flag == false);
   return rt;
@@ -263,7 +250,7 @@ void free_runtime(struct runtime* rt) {
   cnd_destroy(&rt->grq_cnd);
 
   free(rt->procs);
-  free(rt->scheds);
+  // free(rt->scheds);
 
   free(rt);
 }
@@ -271,14 +258,14 @@ void free_runtime(struct runtime* rt) {
 void runtime_start(struct runtime* rt) {
   printf("runtime start\n");
 
-  printf("scheds count = %zu\n", rt->scheds_count);
+  printf("scheds count = %zu\n", rt->threads_count);
 
-  for (size_t i = 0; i < rt->scheds_count; ++i) {
-    int err = thrd_create(&rt->scheds[i].thread, &_scheduler_start_loop, rt);
+  for (size_t i = 0; i < rt->threads_count; ++i) {
+    int err = thrd_create(&rt->threads[i], &_scheduler_start_loop, rt);
     if (err == thrd_error) {
       fprintf(stderr, "thrd_create() error: thrd_error\n");
       exit(EXIT_FAILURE);
-    } 
+    }
     else if (err == thrd_nomem) {
       fprintf(stderr, "thrd_create() error: thrd_nomem\n");
       exit(EXIT_FAILURE);
@@ -290,11 +277,11 @@ void runtime_stop(struct runtime* rt) {
   mtx_lock(&rt->grq_mtx);
   rt->shutdown_flag = true;
   mtx_unlock(&rt->grq_mtx);
-  
+
   cnd_broadcast(&rt->grq_cnd);
-  
-  for (size_t i = 0; i < rt->scheds_count; ++i) {
-    thrd_join(rt->scheds[i].thread, nullptr);
+
+  for (size_t i = 0; i < rt->threads_count; ++i) {
+    thrd_join(rt->threads[i], nullptr);
   }
   printf("runtime stoped\n");
 }
