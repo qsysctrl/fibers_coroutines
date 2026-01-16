@@ -5,74 +5,141 @@
 #include <string.h>
 
 #include "context.h"
-#include "fibers_N_1.h"
-
+#include "queue.h"
+#include "fibers.h"
 
 void test_queue() {
-  struct scheduler s = {};
+  printf("QUEUE TESTS\n");
+  // struct scheduler s = {};
+  // struct fixed_queue queue = allocate_fixed_queue(sizeof(struct queue_node) * 3);
+  struct queue queue = {};
 
-  assert(s.run_queue.head == nullptr);
-  assert(s.run_queue.tail == nullptr);
-  assert(s.run_queue.count == 0);
+  assert(queue.head == nullptr);
+  assert(queue.tail == nullptr);
+  // assert(s.run_queue.count == 0);
 
-  struct execution_context* ctx = malloc(sizeof(struct execution_context));
-  assert(ctx != nullptr);
+  int* first = malloc(sizeof(int));
+  assert(first != nullptr);
   
-  queue_push(&s.run_queue, ctx);
+  queue_push(&queue, first);
   
-  assert(s.run_queue.head != nullptr);
-  assert(s.run_queue.tail != nullptr);
-  assert(s.run_queue.tail == s.run_queue.head);
+  assert(queue.head != nullptr);
+  assert(queue.tail != nullptr);
+  assert(queue.tail == queue.head);
   
-  struct execution_context* ctx2 = malloc(sizeof(struct execution_context));
-  assert(ctx2 != nullptr);
-  queue_push(&s.run_queue, ctx2);
-  assert(s.run_queue.head != nullptr);
-  assert(s.run_queue.tail != nullptr);
-  assert(s.run_queue.tail != s.run_queue.head);
-  assert(s.run_queue.head->next == s.run_queue.tail);
-  assert(s.run_queue.tail->prev == s.run_queue.head);
-  assert(s.run_queue.count == 2);
+  int* second = malloc(sizeof(int));
+  assert(second != nullptr);
 
-  struct execution_context* ctx3 = malloc(sizeof(struct execution_context));
-  assert(ctx3 != nullptr);
-  queue_push(&s.run_queue, ctx3);
-  assert(s.run_queue.head != nullptr);
-  assert(s.run_queue.tail != nullptr);
-  assert(s.run_queue.tail != s.run_queue.head);
-  assert(s.run_queue.head->next != s.run_queue.tail);
-  assert(s.run_queue.tail->prev != s.run_queue.head);
-  assert(s.run_queue.head->next == s.run_queue.tail->prev);
-  assert(s.run_queue.count == 3);
+  queue_push(&queue, second);
+  assert(queue.head != nullptr);
+  assert(queue.tail != nullptr);
+  assert(queue.tail != queue.head);
+  assert(queue.head->next == queue.tail);
+  assert(queue.tail->prev == queue.head);
+  // assert(s.run_queue.count == 2);
+
+  int* third = malloc(sizeof(int));
+  assert(third != nullptr);
+
+  queue_push(&queue, third);
+  assert(queue.head != nullptr);
+  assert(queue.tail != nullptr);
+  assert(queue.tail != queue.head);
+  assert(queue.head->next != queue.tail);
+  assert(queue.tail->prev != queue.head);
+  assert(queue.head->next == queue.tail->prev);
+  // assert(s.run_queue.count == 3);
 
   int idx = 0;
-  for(struct queue_node* node = s.run_queue.head; node != nullptr; node = node->next) {
+  for(struct queue_node* node = queue.head; node != nullptr; node = node->next) {
     if (idx == 0) {
-      assert(node->fiber == ctx);
+      assert((int*)node->payload == first);
     }
     else if (idx == 1) {
-      assert(node->fiber == ctx2);
+      assert((int*)node->payload == second);
     }
     else if (idx == 2) {
-      assert(node->fiber == ctx3);
+      assert((int*)node->payload == third);
     }
 
     ++idx;
   }
 
-  struct execution_context* popped = queue_pop(&s.run_queue);
-  assert(s.run_queue.count == 2);
-  assert(s.run_queue.head != nullptr);
-  assert(s.run_queue.tail != nullptr);
-  assert(s.run_queue.head->fiber != ctx);
-  assert(popped == ctx);
-  assert(s.run_queue.tail != s.run_queue.head);
-  assert(s.run_queue.head->next == s.run_queue.tail);
-  assert(s.run_queue.tail->prev == s.run_queue.head);
+  payload_t* popped = queue_pop(&queue);
+  // assert(s.run_queue.count == 2);
+  assert(queue.head != nullptr);
+  assert(queue.tail != nullptr);
+  assert((int*)queue.head->payload != first);
+  assert((int*)popped == first);
+  assert(queue.tail != queue.head);
+  assert(queue.head->next == queue.tail);
+  assert(queue.tail->prev == queue.head);
+  
+  payload_t* popped2 = queue_pop(&queue);
+  assert(queue.head != nullptr);
+  assert(queue.tail != nullptr);
+  assert((int*)queue.head->payload != second);
+  assert((int*)popped2 == second);
+  assert(queue.tail == queue.head);
+
+  payload_t* popped3 = queue_pop(&queue);
+  assert(queue.head == nullptr);
+  assert(queue.tail == nullptr);
+
+  free(popped3);
+  free(popped2);
+  free(popped);
+  printf("ALL PASSED\n");
+}
+
+void bar1(struct execution_context* ctx) {
+  for (int i = 0; i < 10; ++i) {
+    thrd_sleep(&(struct timespec){.tv_nsec = 500000000 }, NULL);
+    printf("bar1\n");
+    yield(ctx);
+  }
+}
+
+void bar2(struct execution_context* ctx) {
+  for (int i = 0; i < 10; ++i) {
+    thrd_sleep(&(struct timespec){.tv_nsec = 500000000 }, NULL);
+    printf("bar2\n");
+    yield(ctx);
+  }
+}
+
+void bar3(struct execution_context* ctx) {
+  for (int i = 0; i < 10; ++i) {
+    thrd_sleep(&(struct timespec){.tv_nsec = 500000000 }, NULL);
+    printf("bar3\n");
+    yield(ctx);
+  }
+}
+
+void foo(struct execution_context* ctx) {
+  printf("foo\n");
+
+  start(bar1);
+  start(bar2);
+  start(bar3);
+  
+  printf("foo finish\n");
 }
 
 int main() {
-  fibers_N_1_example();
+  struct runtime* rt = allocate_runtime(foo);
+
+  runtime_start(rt);
+
+  thrd_sleep(&(struct timespec){.tv_sec = 1 }, NULL);
+
+  printf("main\n");
+
+  runtime_stop(rt);
+
+  printf("final\n");
+
+  free_runtime(rt);
 
   return 0;
 }

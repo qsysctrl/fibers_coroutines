@@ -14,72 +14,18 @@
 #include <stdlib.h>
 
 #include "context.h"
+#include "queue.h"
 
-
-struct queue_node {
-  struct execution_context* fiber;
-  struct queue_node* next;
-  struct queue_node* prev;
-};
-
-struct queue {
-  struct queue_node* head;
-  struct queue_node* tail;
-  size_t count;
-};
-
-void queue_push(struct queue* queue, struct execution_context* e) {
-  struct queue_node* node = malloc(sizeof(struct queue_node)); // https://stackoverflow.com/questions/1538420/difference-between-malloc-and-calloc
-  if (node == nullptr) {
-    perror("queue_add_element, malloc error");
-    exit(EXIT_FAILURE);
-  }
-  memset(node, 0, sizeof(struct queue_node));
-  node->fiber = e;
-
-  if (queue->tail == nullptr) {
-    assert(queue->head == nullptr);
-
-    queue->head = node;
-    queue->tail = node;
-
-    queue->count += 1;
-    return;
-  }
-
-  queue->tail->next = node;
-  node->prev = queue->tail;
-  queue->tail = node;
-
-  queue->count += 1;
-}
-
-[[nodiscard]]
-struct execution_context* queue_pop(struct queue* queue) {
-  if (queue->head == nullptr) {
-    return nullptr;
-  }
-
-  struct queue_node* popped = queue->head; //     -- --
-  struct queue_node* new_head = queue->head->next;
-  if (new_head != nullptr) {
-    new_head->prev = nullptr;
-  }
-  queue->head = new_head;
-
-  struct execution_context* res = popped->fiber;
-  free(popped);
-
-  queue->count -= 1;
-
-  return res;
+void fiber_switch_to_scheduler(struct execution_context* ctx) {
+  swap_context(&ctx->_ctx, &ctx->_caller_ctx);
 }
 
 void fiber_trampoline(void*, void*, void*, void*, void*, void*, struct execution_context* ctx) {
   assert(ctx != nullptr);
   ctx->_user(ctx);
   ctx->_is_done = true;
-  swap_context(&ctx->_ctx, &ctx->_caller_ctx); // switch to scheduler
+  fiber_switch_to_scheduler(ctx);
+  // swap_context(&ctx->_ctx, &ctx->_caller_ctx); // switch to scheduler
 }
 
 struct execution_context* allocate_fiber(user_f f) {
@@ -89,7 +35,7 @@ struct execution_context* allocate_fiber(user_f f) {
     ._stack_view = allocate_guarded_stack(4096),
     ._caller_ctx = {},
     ._ctx = {
-      .rip = &fiber_trampoline,
+      .rip = (void*)&fiber_trampoline,
     },
     ._is_done = false,
   }, sizeof(struct execution_context));
@@ -105,7 +51,8 @@ void free_fiber(struct execution_context* ctx) {
 }
 
 void fiber_yield(struct execution_context* ctx) {
-  swap_context(&ctx->_ctx, &ctx->_caller_ctx);
+  // swap_context(&ctx->_ctx, &ctx->_caller_ctx);
+  fiber_switch_to_scheduler(ctx);
 }
 
 struct scheduler {
@@ -128,15 +75,26 @@ void scheduler_run(struct scheduler* s) {
   }
 }
 
-void scheduler_add_fiber(struct scheduler* s, user_f f) {
+void scheduler_add_fiber_with_payload(struct scheduler* s, user_f f, void* payload) {
   struct execution_context* ctx = allocate_fiber(f);
+  ctx->payload = payload;
   queue_push(&s->run_queue, ctx);
 }
+
+void scheduler_add_fiber(struct scheduler* s, user_f f) {
+  scheduler_add_fiber_with_payload(s, f, nullptr);
+}
+
 
 [[nodiscard]]
 struct scheduler* get_scheduler() {
   static __thread struct scheduler instance = {};
   return &instance; 
+}
+
+void stack_overflow(size_t i) {
+  printf("recursive %zu\n", i);
+  stack_overflow(++i);
 }
 
 void n_1_foo(struct execution_context* ctx) {
@@ -150,6 +108,7 @@ void n_1_bar(struct execution_context* ctx) {
 
   struct scheduler* s = get_scheduler();
   scheduler_add_fiber(s, &n_1_foo);
+  scheduler_add_fiber(s, &n_1_foo);
 
   fiber_yield(ctx);
   printf("bar() step 2\n");
@@ -157,11 +116,17 @@ void n_1_bar(struct execution_context* ctx) {
   printf("bar() step 3\n");
 }
 
+void test_fibers() {
+
+}
+
 void fibers_N_1_example() {
   struct scheduler* s = get_scheduler();
+
   scheduler_add_fiber(s, &n_1_foo);
   scheduler_add_fiber(s, &n_1_bar);
 
+  
   scheduler_run(s);
 
   printf("final\n");
