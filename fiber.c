@@ -147,7 +147,9 @@ int main() {
 
   printf("main\n");
 
-  runtime_stop(rt);
+  thrd_sleep(&(struct timespec){.tv_sec = 2 }, NULL);
+
+  runtime_graceful_stop(rt);
 
   printf("final\n");
 

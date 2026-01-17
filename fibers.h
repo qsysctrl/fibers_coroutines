@@ -30,19 +30,16 @@ struct processor {
   struct queue free_list; // free fibers (after completion of the execution)
   struct scheduler* current_thread; // associated thread
   struct runtime* rt;
-  // when execution is blocked by syscall, we switch to
-  // machine
+  bool shutdown_flag;
 };
 
 
 struct runtime {
   struct queue global_run_queue;
   struct processor* procs; // PROCS_MAX = user defined maximum number of processors
-  // struct scheduler* scheds;
   thrd_t* threads;
   size_t procs_count; // length of the `procs` array
   size_t threads_count; // length of the `scheds` array
-  size_t parked_count;
   bool shutdown_flag;
   mtx_t grq_mtx;
   cnd_t grq_cnd;
@@ -91,12 +88,17 @@ void free_fiber(fiber_t* fb) {
   free(fb);
 }
 
-void scheduler_add_fiber(struct scheduler* sched, fiber_f f) {
+bool scheduler_add_fiber(struct scheduler* sched, fiber_f f) {
+  if (sched->proc->shutdown_flag) {
+    return false;
+  }
+
   fiber_t* fb = _allocate_fiber(f);
   queue_push(&sched->proc->local_run_queue, fb);
+  return true;
 }
-void start(fiber_f f) {
-  scheduler_add_fiber(get_scheduler(), f);
+bool start(fiber_f f) {
+  return scheduler_add_fiber(get_scheduler(), f);
 }
 
 fiber_t* _scheduler_get_executable_fiber(struct scheduler* sched) {
@@ -108,33 +110,41 @@ fiber_t* _scheduler_get_executable_fiber(struct scheduler* sched) {
   if (fb != nullptr) {
     return fb;
   }
+  printf("%zu: local run queue is empty, trying global queue\n",thrd_current());
 
-  mtx_t* const grq_mtx = &sched->proc->rt->grq_mtx;
-  cnd_t* const grq_cnd = &sched->proc->rt->grq_cnd;
+  struct runtime* const rt = sched->proc->rt;
+  mtx_t* const grq_mtx = &rt->grq_mtx;
+  cnd_t* const grq_cnd = &rt->grq_cnd;
 
   mtx_lock(grq_mtx);
-  if (sched->proc->rt->shutdown_flag) {
+  if (rt->shutdown_flag) {
+    printf("%zu: shutdown\n", thrd_current());
     mtx_unlock(grq_mtx);
     return nullptr;
   }
 
   // TODO: pop several fibers in one time
-  if ((fb = queue_pop(&sched->proc->rt->global_run_queue)) == nullptr) {
-    sched->proc->rt->parked_count += 1;
+  while (!rt->shutdown_flag) {
+    // TODO: fibers stealing
+    if ((fb = queue_pop(&rt->global_run_queue)) == nullptr) {
+      printf("%zu: global run queue is empty, parking\n", thrd_current());
+      assert(rt->parked_count <= rt->threads_count);
 
-    assert(sched->proc->rt->parked_count <= sched->proc->rt->threads_count);
-
-    if (sched->proc->rt->parked_count == sched->proc->rt->threads_count) {
-      sched->proc->rt->parked_count -= 1;
-      mtx_unlock(grq_mtx);
-      return nullptr;
+      cnd_wait(grq_cnd, grq_mtx);
     }
-
-    cnd_wait(grq_cnd, grq_mtx);
+    else { // fb != nullptr
+      printf("%zu: start executing\n", thrd_current());
+      break; // while (!rt->shutdown_flag)
+    }
   }
 
-  if (fb != nullptr) {
-    sched->proc->rt->parked_count -= 1;
+  if (fb == nullptr) {
+    assert(rt->shutdown_flag == true);
+    printf("%zu: shutdown\n", thrd_current());
+  }
+
+  if (rt->shutdown_flag) { // for debug only
+    assert(fb == nullptr);
   }
 
   mtx_unlock(grq_mtx);
@@ -159,7 +169,8 @@ void _runtime_bind_proc_to_sched(struct runtime* rt, struct scheduler* binding_s
   }
 }
 
-int _scheduler_start_loop(void* rt) {
+int _scheduler_start_loop(void* _rt) {
+  struct runtime* rt = _rt;
   struct scheduler* sched = get_scheduler();
 
   _runtime_bind_proc_to_sched(rt, sched);
@@ -169,7 +180,7 @@ int _scheduler_start_loop(void* rt) {
   for (;;) {
     fiber_t* fb = _scheduler_get_executable_fiber(sched);
     if (fb == nullptr) {
-      break; // thread joining
+      break;
     }
 
     swap_context(&fb->_caller_ctx, &fb->_ctx);
@@ -250,7 +261,7 @@ void free_runtime(struct runtime* rt) {
   cnd_destroy(&rt->grq_cnd);
 
   free(rt->procs);
-  // free(rt->scheds);
+  free(rt->threads);
 
   free(rt);
 }
@@ -273,11 +284,17 @@ void runtime_start(struct runtime* rt) {
   }
 }
 
-void runtime_stop(struct runtime* rt) {
+void runtime_graceful_stop(struct runtime* rt) {
   mtx_lock(&rt->grq_mtx);
-  rt->shutdown_flag = true;
-  mtx_unlock(&rt->grq_mtx);
+  if (rt->global_run_queue.head == nullptr) {
+    rt->shutdown_flag = true;
+  }
 
+  for (size_t i = 0; i < rt->procs_count; ++i) {
+    rt->procs[i].shutdown_flag = true;
+  }
+
+  mtx_unlock(&rt->grq_mtx);
   cnd_broadcast(&rt->grq_cnd);
 
   for (size_t i = 0; i < rt->threads_count; ++i) {
