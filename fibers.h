@@ -5,10 +5,18 @@
 # error "Fibers is already defined in by including fibers_N_1.h"
 #endif
 
+/*
+ * TODOs:
+ * [ ] netpoll
+ * [ ] Fibers stealing
+ * - [ ] lock-free SPMC queue for local run queues
+ */
+
 
 #include <threads.h>
 #include <assert.h>
 #include <string.h>
+#include <stddef.h>
 #include <sys/sysinfo.h>
 #include "context.h"
 #include "queue.h"
@@ -106,50 +114,38 @@ fiber_t* _scheduler_get_executable_fiber(struct scheduler* sched) {
   assert(sched->proc != nullptr);
   assert(sched->proc->rt != nullptr);
 
-  fiber_t* fb = queue_pop(&sched->proc->local_run_queue);
-  if (fb != nullptr) {
-    return fb;
-  }
-  printf("%zu: local run queue is empty, trying global queue\n",thrd_current());
-
   struct runtime* const rt = sched->proc->rt;
   mtx_t* const grq_mtx = &rt->grq_mtx;
   cnd_t* const grq_cnd = &rt->grq_cnd;
 
-  mtx_lock(grq_mtx);
-  if (rt->shutdown_flag) {
-    printf("%zu: shutdown\n", thrd_current());
+  fiber_t* fb = nullptr;
+
+  for (;;) {
+    fb = queue_pop(&sched->proc->local_run_queue);
+    if (fb != nullptr) {
+      printf("%zu: start executing from local queue\n", thrd_current());
+      return fb;
+    }
+    printf("%zu: local run queue is empty, trying global queue\n",thrd_current());
+
+    mtx_lock(grq_mtx);
+    fb = queue_pop(&rt->global_run_queue);
+    if (fb != nullptr) {
+      mtx_unlock(grq_mtx);
+      printf("%zu: start executing from global queue\n", thrd_current());
+      return fb;
+    }
+
+    if (rt->shutdown_flag) {
+      mtx_unlock(grq_mtx);
+      return nullptr;
+    }
+
+    cnd_wait(grq_cnd, grq_mtx);
     mtx_unlock(grq_mtx);
-    return nullptr;
   }
-
-  // TODO: pop several fibers in one time
-  while (!rt->shutdown_flag) {
-    // TODO: fibers stealing
-    if ((fb = queue_pop(&rt->global_run_queue)) == nullptr) {
-      printf("%zu: global run queue is empty, parking\n", thrd_current());
-      assert(rt->parked_count <= rt->threads_count);
-
-      cnd_wait(grq_cnd, grq_mtx);
-    }
-    else { // fb != nullptr
-      printf("%zu: start executing\n", thrd_current());
-      break; // while (!rt->shutdown_flag)
-    }
-  }
-
-  if (fb == nullptr) {
-    assert(rt->shutdown_flag == true);
-    printf("%zu: shutdown\n", thrd_current());
-  }
-
-  if (rt->shutdown_flag) { // for debug only
-    assert(fb == nullptr);
-  }
-
-  mtx_unlock(grq_mtx);
-
-  return fb;
+  assert(false);
+  unreachable();
 }
 
 void _runtime_bind_proc_to_sched(struct runtime* rt, struct scheduler* binding_sched) {
@@ -189,6 +185,7 @@ int _scheduler_start_loop(void* _rt) {
     }
   }
 
+  printf("%zu: shutdown\n", thrd_current());
   return 0;
 }
 
@@ -286,9 +283,9 @@ void runtime_start(struct runtime* rt) {
 
 void runtime_graceful_stop(struct runtime* rt) {
   mtx_lock(&rt->grq_mtx);
-  if (rt->global_run_queue.head == nullptr) {
-    rt->shutdown_flag = true;
-  }
+
+  assert(rt->global_run_queue.head == nullptr); // for debug
+  rt->shutdown_flag = true;
 
   for (size_t i = 0; i < rt->procs_count; ++i) {
     rt->procs[i].shutdown_flag = true;
