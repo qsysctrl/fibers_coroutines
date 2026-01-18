@@ -18,6 +18,7 @@
 #include <string.h>
 #include <stddef.h>
 #include <sys/sysinfo.h>
+#include <pthread.h>
 #include "context.h"
 #include "queue.h"
 
@@ -74,7 +75,7 @@ void _fiber_trampoline(void*, void*, void*, void*, void*, void*, fiber_t* fb) {
   _fiber_switch_to_scheduler(fb);
 }
 
-struct execution_context* _allocate_fiber(fiber_f f) {
+fiber_t* _allocate_fiber(fiber_f f) {
   struct execution_context* r = malloc(sizeof(coro_t));
   memcpy(r, &(struct execution_context){
     ._user = f,
@@ -91,6 +92,21 @@ struct execution_context* _allocate_fiber(fiber_f f) {
   return r;
 }
 
+void _fiber_reset(fiber_t* fb, fiber_f f) {
+  fb->_user = f;
+  memset(&fb->_ctx, 0, sizeof(fb->_ctx));
+  memset(&fb->_ctx, 0, sizeof(fb->_caller_ctx));
+  fb->_ctx.rip = (void*)&_fiber_trampoline;
+  fb->_is_done = false;
+
+  void* stack_base = get_stack_start(fb->_stack_view);
+  fb->_ctx.rsp = setup_context(stack_base, &_fiber_trampoline, fb);
+}
+
+void _push_fiber_to_free_queue(struct scheduler* sched, fiber_t* fb) {
+  queue_push(&sched->proc->free_list, fb);
+}
+
 void free_fiber(fiber_t* fb) {
   free_stack(fb->_stack_view);
   free(fb);
@@ -101,7 +117,15 @@ bool scheduler_add_fiber(struct scheduler* sched, fiber_f f) {
     return false;
   }
 
-  fiber_t* fb = _allocate_fiber(f);
+  fiber_t* fb = queue_pop(&sched->proc->free_list);
+  if (fb != nullptr) {
+    printf("%zu: got new fiber context from free queue\n", thrd_current());
+    _fiber_reset(fb, f);
+    queue_push(&sched->proc->local_run_queue, fb);
+    return true;
+  }
+
+  fb = _allocate_fiber(f);
   queue_push(&sched->proc->local_run_queue, fb);
   return true;
 }
@@ -109,8 +133,24 @@ bool start(fiber_f f) {
   return scheduler_add_fiber(get_scheduler(), f);
 }
 
-fiber_t* _scheduler_get_executable_fiber(struct scheduler* sched) {
-  assert(sched != nullptr);
+void _proc_free_free_queue_fibers(struct processor* proc) {
+  fiber_t* fb = nullptr;
+  while ((fb = queue_pop(&proc->free_list)) != nullptr) {
+    free_fiber(fb);
+  }
+}
+
+void _scheduler_shutdown() {
+  printf("%zu: shutdown\n", thrd_current());
+
+  struct scheduler* sched = get_scheduler();
+
+  _proc_free_free_queue_fibers(sched->proc);
+}
+
+fiber_t* _scheduler_get_executable_fiber() {
+  struct scheduler* const sched = get_scheduler();
+
   assert(sched->proc != nullptr);
   assert(sched->proc->rt != nullptr);
 
@@ -148,16 +188,17 @@ fiber_t* _scheduler_get_executable_fiber(struct scheduler* sched) {
   unreachable();
 }
 
-void _runtime_bind_proc_to_sched(struct runtime* rt, struct scheduler* binding_sched) {
+void _runtime_bind_proc_to_sched(struct runtime* rt) {
   assert(rt != nullptr);
-  assert(binding_sched != nullptr);
+
+  struct scheduler* sched = get_scheduler();
 
   // TODO: mechanism of selecting the processor for binding
   // Now just statis var
   static size_t proc_idx = 0;
 
-  binding_sched->proc = &rt->procs[proc_idx];
-  rt->procs[proc_idx].current_thread = binding_sched;
+  sched->proc = &rt->procs[proc_idx];
+  rt->procs[proc_idx].current_thread = sched;
 
   ++proc_idx;
   if (proc_idx == rt->procs_count) {
@@ -166,26 +207,31 @@ void _runtime_bind_proc_to_sched(struct runtime* rt, struct scheduler* binding_s
 }
 
 int _scheduler_start_loop(void* _rt) {
+  assert(_rt != nullptr);
+
+  printf("%zu: join in loop\n", thrd_current());
+
   struct runtime* rt = _rt;
-  struct scheduler* sched = get_scheduler();
 
-  _runtime_bind_proc_to_sched(rt, sched);
-
-  assert(sched != nullptr);
+  _runtime_bind_proc_to_sched(rt);
 
   for (;;) {
-    fiber_t* fb = _scheduler_get_executable_fiber(sched);
+    fiber_t* fb = _scheduler_get_executable_fiber();
     if (fb == nullptr) {
       break;
     }
 
     swap_context(&fb->_caller_ctx, &fb->_ctx);
     if (fb->_is_done) {
-      free_fiber(fb);
+      printf("%zu: push completed fiber context to free queue\n", thrd_current());
+      struct scheduler* const sched = get_scheduler();
+      queue_push(&sched->proc->free_list, fb);
+      // _push_fiber_to_free_queue(fb);
     }
   }
 
-  printf("%zu: shutdown\n", thrd_current());
+  _scheduler_shutdown();
+
   return 0;
 }
 
@@ -263,6 +309,11 @@ void free_runtime(struct runtime* rt) {
   free(rt);
 }
 
+void* _test(void*) {
+  printf("\nhui\n");
+  return 0;
+}
+
 void runtime_start(struct runtime* rt) {
   printf("runtime start\n");
 
@@ -278,6 +329,7 @@ void runtime_start(struct runtime* rt) {
       fprintf(stderr, "thrd_create() error: thrd_nomem\n");
       exit(EXIT_FAILURE);
     }
+    printf("thread %zu created\n", rt->threads[i]);
   }
 }
 

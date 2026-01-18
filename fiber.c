@@ -93,38 +93,46 @@ void test_queue() {
   printf("ALL PASSED\n");
 }
 
-void bar1(struct execution_context* ctx) {
+void nothing(fiber_t* f) {
+  (void)f;
+  return;
+}
+
+void bar1(fiber_t* f) {
   printf("bar1 running on thread %zu\n", thrd_current());
   for (int i = 0; i < 10; ++i) {
     thrd_sleep(&(struct timespec){.tv_nsec = 500000000 }, NULL);
     printf("bar1\n");
-    yield(ctx);
+    yield(f);
   }
   printf("bar1 complete\n");
 }
 
-void bar2(struct execution_context* ctx) {
+void bar2(fiber_t* f) {
   printf("bar2 running on thread %zu\n", thrd_current());
   for (int i = 0; i < 10; ++i) {
     thrd_sleep(&(struct timespec){.tv_nsec = 500000000 }, NULL);
     printf("bar2\n");
-    yield(ctx);
+    yield(f);
   }
   printf("bar2 complete\n");
 }
 
-void bar3(struct execution_context* ctx) {
+void bar3(fiber_t* f) {
   printf("bar3 running on thread %zu\n", thrd_current());
   for (int i = 0; i < 10; ++i) {
     thrd_sleep(&(struct timespec){.tv_nsec = 500000000 }, NULL);
     printf("bar3\n");
-    yield(ctx);
+    yield(f);
   }
   printf("bar3 complete\n");
 }
 
 void foo(struct execution_context* ctx) {
   printf("foo running on %zu\n", thrd_current());
+
+  start(nothing);
+  start(nothing);
 
   start(bar1);
   yield(ctx);
@@ -138,8 +146,17 @@ void foo(struct execution_context* ctx) {
   printf("foo finish\n");
 }
 
+int test(void*) {
+  return 0;
+}
+
 int main() {
   struct runtime* rt = allocate_runtime(foo);
+
+  // thrd_t tt = {};
+  // thrd_create(&tt, nullptr, nullptr);
+  // thrd_join(tt, nullptr);
+  // return 0;
 
   runtime_start(rt);
 
