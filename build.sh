@@ -4,10 +4,10 @@ gcc -c swap_context.s -o obj/swap_context.o
 gcc -c setup_context.s -o obj/setup_context.o
 
 # address, ub, leak sans -g:
-# gcc -std=c2x -Wall -Wextra -Wpedantic -fsanitize=address,undefined,leak -g obj/set_context.o obj/get_context.o obj/swap_context.o obj/setup_context.o -o out/fiber fiber.c
+gcc -std=c2x -Wall -Wextra -Wpedantic -fsanitize=address,undefined,leak -g obj/set_context.o obj/get_context.o obj/swap_context.o obj/setup_context.o -o out/fiber fiber.c
 
 # thread san -g:
-gcc -std=c2x -Wall -Wextra -Wpedantic -fsanitize=thread -g obj/set_context.o obj/get_context.o obj/swap_context.o obj/setup_context.o -o out/fiber fiber.c
+# gcc -std=c2x -Wall -Wextra -Wpedantic -fsanitize=thread -g obj/set_context.o obj/get_context.o obj/swap_context.o obj/setup_context.o -o out/fiber fiber.c
 
 # -g
 # gcc -std=c2x -Wall -Wextra -Wpedantic -g obj/set_context.o obj/get_context.o obj/swap_context.o obj/setup_context.o -o out/fiber fiber.c

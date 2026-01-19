@@ -1,6 +1,10 @@
 #ifndef FIBERS_H
 #define FIBERS_H
 
+#include <asm-generic/errno-base.h>
+#include <bits/pthreadtypes.h>
+#include <stdio.h>
+#include <stdlib.h>
 #ifdef FIBERS_N_1_H // TODO: delete this
 # error "Fibers is already defined in by including fibers_N_1.h"
 #endif
@@ -13,7 +17,7 @@
  */
 
 
-#include <threads.h>
+// #include <threads.h>
 #include <assert.h>
 #include <string.h>
 #include <stddef.h>
@@ -21,6 +25,21 @@
 #include <pthread.h>
 #include "context.h"
 #include "queue.h"
+
+void mutex_try_lock(pthread_mutex_t* mtx) {
+  int err = pthread_mutex_lock(mtx);
+  if (err != 0) {
+    fprintf(stderr, "mutex lock error: %s\n", strerror(err));
+    exit(EXIT_FAILURE);
+  }
+}
+void mutex_try_unlock(pthread_mutex_t* mtx) {
+  int err = pthread_mutex_unlock(mtx);
+  if (err != 0) {
+    fprintf(stderr, "mutex unlock error: %s\n", strerror(err));
+    exit(EXIT_FAILURE);
+  }
+}
 
 
 typedef struct execution_context fiber_t;
@@ -30,7 +49,7 @@ typedef void(*fiber_f)(fiber_t*);
 struct processor;
 
 struct scheduler {
-  thrd_t thread;
+  pthread_t thread;
   struct processor* proc; // associated processor
 };
 
@@ -46,12 +65,12 @@ struct processor {
 struct runtime {
   struct queue global_run_queue;
   struct processor* procs; // PROCS_MAX = user defined maximum number of processors
-  thrd_t* threads;
+  pthread_t* threads;
   size_t procs_count; // length of the `procs` array
   size_t threads_count; // length of the `scheds` array
   bool shutdown_flag;
-  mtx_t grq_mtx;
-  cnd_t grq_cnd;
+  pthread_mutex_t rt_mtx;
+  pthread_cond_t rt_cnd;
 };
 
 struct scheduler* get_scheduler() {
@@ -113,13 +132,14 @@ void free_fiber(fiber_t* fb) {
 }
 
 bool scheduler_add_fiber(struct scheduler* sched, fiber_f f) {
+  // No data race because sched->proc is used only by current thread
   if (sched->proc->shutdown_flag) {
     return false;
   }
 
   fiber_t* fb = queue_pop(&sched->proc->free_list);
   if (fb != nullptr) {
-    printf("%zu: got new fiber context from free queue\n", thrd_current());
+    printf("%zu: got new fiber context from free queue\n", pthread_self());
     _fiber_reset(fb, f);
     queue_push(&sched->proc->local_run_queue, fb);
     return true;
@@ -141,7 +161,7 @@ void _proc_free_free_queue_fibers(struct processor* proc) {
 }
 
 void _scheduler_shutdown() {
-  printf("%zu: shutdown\n", thrd_current());
+  printf("%zu: shutdown\n", pthread_self());
 
   struct scheduler* sched = get_scheduler();
 
@@ -155,34 +175,34 @@ fiber_t* _scheduler_get_executable_fiber() {
   assert(sched->proc->rt != nullptr);
 
   struct runtime* const rt = sched->proc->rt;
-  mtx_t* const grq_mtx = &rt->grq_mtx;
-  cnd_t* const grq_cnd = &rt->grq_cnd;
+  pthread_mutex_t* const grq_mtx = &rt->rt_mtx;
+  pthread_cond_t* const grq_cnd = &rt->rt_cnd;
 
   fiber_t* fb = nullptr;
 
   for (;;) {
     fb = queue_pop(&sched->proc->local_run_queue);
     if (fb != nullptr) {
-      printf("%zu: start executing from local queue\n", thrd_current());
+      printf("%zu: start executing from local queue\n", pthread_self());
       return fb;
     }
-    printf("%zu: local run queue is empty, trying global queue\n",thrd_current());
+    printf("%zu: local run queue is empty, trying global queue\n", pthread_self());
 
-    mtx_lock(grq_mtx);
+    mutex_try_lock(grq_mtx);
     fb = queue_pop(&rt->global_run_queue);
     if (fb != nullptr) {
-      mtx_unlock(grq_mtx);
-      printf("%zu: start executing from global queue\n", thrd_current());
+      mutex_try_unlock(grq_mtx);
+      printf("%zu: start executing from global queue\n", pthread_self());
       return fb;
     }
 
     if (rt->shutdown_flag) {
-      mtx_unlock(grq_mtx);
+      mutex_try_unlock(grq_mtx);
       return nullptr;
     }
 
-    cnd_wait(grq_cnd, grq_mtx);
-    mtx_unlock(grq_mtx);
+    pthread_cond_wait(grq_cnd, grq_mtx);
+    mutex_try_unlock(grq_mtx);
   }
   assert(false);
   unreachable();
@@ -197,6 +217,7 @@ void _runtime_bind_proc_to_sched(struct runtime* rt) {
   // Now just statis var
   static size_t proc_idx = 0;
 
+  mutex_try_lock(&rt->rt_mtx);
   sched->proc = &rt->procs[proc_idx];
   rt->procs[proc_idx].current_thread = sched;
 
@@ -204,12 +225,13 @@ void _runtime_bind_proc_to_sched(struct runtime* rt) {
   if (proc_idx == rt->procs_count) {
     proc_idx = 0;
   }
+  mutex_try_unlock(&rt->rt_mtx);
 }
 
-int _scheduler_start_loop(void* _rt) {
+void* _scheduler_start_loop(void* _rt) {
   assert(_rt != nullptr);
 
-  printf("%zu: join in loop\n", thrd_current());
+  printf("%zu: join in loop\n", pthread_self());
 
   struct runtime* rt = _rt;
 
@@ -223,7 +245,7 @@ int _scheduler_start_loop(void* _rt) {
 
     swap_context(&fb->_caller_ctx, &fb->_ctx);
     if (fb->_is_done) {
-      printf("%zu: push completed fiber context to free queue\n", thrd_current());
+      printf("%zu: push completed fiber context to free queue\n", pthread_self());
       struct scheduler* const sched = get_scheduler();
       queue_push(&sched->proc->free_list, fb);
       // _push_fiber_to_free_queue(fb);
@@ -232,7 +254,7 @@ int _scheduler_start_loop(void* _rt) {
 
   _scheduler_shutdown();
 
-  return 0;
+  return nullptr;
 }
 
 void _runtime_init_procs(struct runtime* rt) {
@@ -273,21 +295,8 @@ struct runtime* allocate_runtime(fiber_f start_f) {
     exit(EXIT_FAILURE);
   }
 
-  if (mtx_init(&rt->grq_mtx, mtx_plain) == thrd_error) {
-    free(rt->procs);
-    free(rt->threads);
-
-    fprintf(stderr, "mtx_init error\n");
-    exit(EXIT_FAILURE);
-  }
-  if (cnd_init(&rt->grq_cnd) == thrd_error) {
-    free(rt->procs);
-    free(rt->threads);
-    mtx_destroy(&rt->grq_mtx);
-
-    fprintf(stderr, "cnd_init() error\n"); // TODO
-    exit(EXIT_FAILURE);
-  }
+  pthread_mutex_init(&rt->rt_mtx, nullptr);
+  pthread_cond_init(&rt->rt_cnd, nullptr);
 
   fiber_t* start_fb = _allocate_fiber(start_f);
   queue_push(&rt->global_run_queue, start_fb);
@@ -300,8 +309,14 @@ struct runtime* allocate_runtime(fiber_f start_f) {
 }
 
 void free_runtime(struct runtime* rt) {
-  mtx_destroy(&rt->grq_mtx);
-  cnd_destroy(&rt->grq_cnd);
+  if (pthread_mutex_destroy(&rt->rt_mtx) == EBUSY) {
+    fprintf(stderr, "Cannot destroy mutex because it is currently locked");
+    exit(EXIT_FAILURE);
+  }
+  if (pthread_cond_destroy(&rt->rt_cnd)) {
+    fprintf(stderr, "Cannot destroy cond because some threads are currently waiting on it");
+    exit(EXIT_FAILURE);
+  }
 
   free(rt->procs);
   free(rt->threads);
@@ -317,24 +332,22 @@ void* _test(void*) {
 void runtime_start(struct runtime* rt) {
   printf("runtime start\n");
 
-  printf("scheds count = %zu\n", rt->threads_count);
+  printf("threads count = %zu\n", rt->threads_count);
 
   for (size_t i = 0; i < rt->threads_count; ++i) {
-    int err = thrd_create(&rt->threads[i], &_scheduler_start_loop, rt);
-    if (err == thrd_error) {
-      fprintf(stderr, "thrd_create() error: thrd_error\n");
+
+    int err = pthread_create(&rt->threads[i], nullptr, &_scheduler_start_loop, rt);
+    if (err != 0) {
+      fprintf(stderr, "pthread_create error %s\n", strerror(err));
       exit(EXIT_FAILURE);
     }
-    else if (err == thrd_nomem) {
-      fprintf(stderr, "thrd_create() error: thrd_nomem\n");
-      exit(EXIT_FAILURE);
-    }
+
     printf("thread %zu created\n", rt->threads[i]);
   }
 }
 
 void runtime_graceful_stop(struct runtime* rt) {
-  mtx_lock(&rt->grq_mtx);
+  mutex_try_lock(&rt->rt_mtx);
 
   assert(rt->global_run_queue.head == nullptr); // for debug
   rt->shutdown_flag = true;
@@ -343,11 +356,15 @@ void runtime_graceful_stop(struct runtime* rt) {
     rt->procs[i].shutdown_flag = true;
   }
 
-  mtx_unlock(&rt->grq_mtx);
-  cnd_broadcast(&rt->grq_cnd);
+  mutex_try_unlock(&rt->rt_mtx);
+  pthread_cond_broadcast(&rt->rt_cnd);
 
   for (size_t i = 0; i < rt->threads_count; ++i) {
-    thrd_join(rt->threads[i], nullptr);
+    int err = pthread_join(rt->threads[i], nullptr);
+    if (err != 0) {
+      fprintf(stderr, "thread join error: %s\n", strerror(err));
+      exit(EXIT_FAILURE);
+    }
   }
   printf("runtime stoped\n");
 }
