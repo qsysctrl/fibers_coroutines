@@ -35,7 +35,7 @@ struct context {
 
 struct view {
   byte* ptr;
-  size_t length; // includes guard page. Actual stack length excludes guard page size 
+  size_t length; // includes guard page. Actual stack length excludes guard page size
 };
 
 byte* get_stack_start(struct view stack_v) {
@@ -51,11 +51,11 @@ struct view map_stack(size_t user_pages_n, size_t guard_pages_n) {
   assert(guard_pages_n != 0);
 
   size_t length = get_byte_of_pages(user_pages_n + guard_pages_n);
-  void* result = mmap(nullptr, 
+  void* result = mmap(nullptr,
                       length,
-                      PROT_READ | PROT_WRITE, 
-                      MAP_PRIVATE | MAP_ANONYMOUS, 
-                      -1, 
+                      PROT_READ | PROT_WRITE,
+                      MAP_PRIVATE | MAP_ANONYMOUS,
+                      -1,
                       0);
   if (result == MAP_FAILED) {
     return (struct view){ .ptr = MAP_FAILED };
@@ -125,4 +125,3 @@ typedef void(*trampoline)(void*, void*, void*, void*, void*, void*, struct execu
 extern void* setup_context(void* restrict stack_start, trampoline t, struct execution_context* user);
 
 #endif // #ifndef FIBER_CONTEXT_H
-

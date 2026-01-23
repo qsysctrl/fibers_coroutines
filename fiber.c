@@ -1,4 +1,5 @@
 #include <assert.h>
+#include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -14,71 +15,71 @@ void nothing(fiber_t* f) {
   return;
 }
 
+struct q_logger *g_logger = nullptr;
+
 void bar1(fiber_t* f) {
-  printf("bar1 running on thread %zu\n", thrd_current());
-  for (int i = 0; i < 10; ++i) {
-    thrd_sleep(&(struct timespec){.tv_nsec = 500000000 }, NULL);
-    printf("bar1\n");
-    yield(f);
+  printf("[USER CODE] bar1 running on thread %zu\n", pthread_self());
+
+  for (int i = 0; i < 5; ++i) {
+    sleep_for((struct timespec){.tv_nsec = 500000000 });
+    printf("-- bar1 step %d\n", i);
+    yield();
   }
-  printf("bar1 complete\n");
+
+  printf("[USER CODE] bar1 completed\n");
 }
 
 void bar2(fiber_t* f) {
-  printf("bar2 running on thread %zu\n", thrd_current());
+  printf("[USER CODE] bar2 running on thread %zu\n", pthread_self());
+
   for (int i = 0; i < 10; ++i) {
-    thrd_sleep(&(struct timespec){.tv_nsec = 500000000 }, NULL);
-    printf("bar2\n");
-    yield(f);
+    sleep_for((struct timespec){.tv_nsec = 500000000 });
+    printf("-- bar2 step %d\n", i);
+    yield();
   }
-  printf("bar2 complete\n");
+
+  printf("[USER CODE] bar2 completed\n");
 }
 
 void bar3(fiber_t* f) {
-  printf("bar3 running on thread %zu\n", thrd_current());
+  printf("[USER CODE] bar3 running on thread %zu\n", pthread_self());
+
   for (int i = 0; i < 10; ++i) {
-    thrd_sleep(&(struct timespec){.tv_nsec = 500000000 }, NULL);
-    printf("bar3\n");
-    yield(f);
+    sleep_for((struct timespec){.tv_nsec = 500000000 });
+    printf("-- bar3 step %d\n", i);
+    yield();
   }
-  printf("bar3 complete\n");
+
+  printf("[USER CODE] bar3 completed\n");
 }
 
 void foo(struct execution_context* ctx) {
-  printf("foo running on %zu\n", thrd_current());
+  printf("[USER CODE] foo running on thread %zu\n", pthread_self());
 
-  start(nothing);
-  start(nothing);
+  go(bar1);
 
-  start(bar1);
-  yield(ctx);
+  go(bar2);
 
-  start(bar2);
-  yield(ctx);
+  go(bar3);
 
-  start(bar3);
-  yield(ctx);
-
-  printf("foo finish\n");
+  printf("[USER CODE] foo completed\n");
 }
 
-int main() {
+void test_runtime() {
   struct runtime* rt = allocate_runtime(foo);
+  assert(rt != nullptr);
 
-  runtime_start(rt);
-
-  thrd_sleep(&(struct timespec){.tv_sec = 2 }, NULL);
-
-  printf("main\n");
-
-  thrd_sleep(&(struct timespec){.tv_sec = 2 }, NULL);
-
-  printf("stoping runtime:\n");
-  runtime_graceful_stop(rt);
+  runtime_run(rt);
 
   printf("final\n");
 
   free_runtime(rt);
+}
+
+int main() {
+  // test_queue();
+
+  test_runtime();
 
   return 0;
 }

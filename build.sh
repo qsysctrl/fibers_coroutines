@@ -10,7 +10,7 @@ gcc -std=c2x -Wall -Wextra -Wpedantic -fsanitize=address,undefined,leak -g obj/s
 # gcc -std=c2x -Wall -Wextra -Wpedantic -fsanitize=thread -g obj/set_context.o obj/get_context.o obj/swap_context.o obj/setup_context.o -o out/fiber fiber.c
 
 # -g
-# gcc -std=c2x -Wall -Wextra -Wpedantic -g obj/set_context.o obj/get_context.o obj/swap_context.o obj/setup_context.o -o out/fiber fiber.c
+# gcc -std=c2x -Wall -Wextra -Wpedantic -g -lm obj/set_context.o obj/get_context.o obj/swap_context.o obj/setup_context.o -o out/fiber fiber.c
 
 # -O2
 # gcc -std=c2x -Wall -Wextra -Wpedantic -O2 obj/set_context.o obj/get_context.o obj/swap_context.o obj/setup_context.o -o out/fiber fiber.c
