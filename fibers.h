@@ -1,14 +1,6 @@
 #ifndef FIBERS_H
 #define FIBERS_H
 
-// Source - https://stackoverflow.com/a
-// Posted by Davislor, modified by community. See post 'Timeline' for change history
-// Retrieved 2026-01-20, License - CC BY-SA 4.0
-// #define _XOPEN_SOURCE   600
-// #define _POSIX_C_SOURCE 200112L
-
-
-#include <threads.h>
 #ifdef FIBERS_N_1_H // TODO: delete this
 # error "Fibers is already defined in by including fibers_N_1.h"
 #endif
@@ -21,7 +13,7 @@
  */
 
 
-// #include <threads.h>
+#include <threads.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <assert.h>
@@ -34,18 +26,28 @@
 #include "context.h"
 #include "queue.h"
 
+#ifdef NDEBUG
+  #define _FIBER_LOG(FMT, ...)
+  #define _FIBER_LOG_ERROR(FMT, ...)
+  #define _FIBER_LOG_AS_THREAD(FMT, ...)
+#else
+  #define _FIBER_LOG(FMT, ...) printf("" FMT "\n" __VA_OPT__(,) __VA_ARGS__)
+  #define _FIBER_LOG_ERROR(FMT, ...) fprintf(stderr, "" FMT "\n" __VA_OPT__(,) __VA_ARGS__)
+  #define _FIBER_LOG_AS_THREAD(FMT, ...) printf("[TH:%zu] " FMT "\n", pthread_self() __VA_OPT__(,) __VA_ARGS__ );
+#endif
+
 
 void mutex_try_lock(pthread_mutex_t* mtx) {
   int err = pthread_mutex_lock(mtx);
   if (err != 0) {
-    fprintf(stderr, "mutex lock error: %s\n", strerror(err));
+    _FIBER_LOG_ERROR("mutex lock error: %s", strerror(err));
     exit(EXIT_FAILURE);
   }
 }
 void mutex_try_unlock(pthread_mutex_t* mtx) {
   int err = pthread_mutex_unlock(mtx);
   if (err != 0) {
-    fprintf(stderr, "mutex unlock error: %s\n", strerror(err));
+    _FIBER_LOG_ERROR("mutex unlock error: %s", strerror(err));
     exit(EXIT_FAILURE);
   }
 }
@@ -109,7 +111,7 @@ void _scheduler_detach_processor(struct scheduler* sched) {
 
   sched->proc = nullptr;
 
-  printf("Processor detach signal sended\n");
+  _FIBER_LOG("Processor detach signal sended");
   pthread_cond_signal(&rt->rt_cnd);
 }
 
@@ -134,7 +136,7 @@ bool _scheduler_get_free_processor(struct scheduler* sched) {
 
   mutex_try_unlock(&rt->rt_mtx);
 
-  printf("[TH:%zu], got free processor\n", pthread_self());
+  _FIBER_LOG_AS_THREAD("got free processor");
 
   return true;
 }
@@ -201,7 +203,7 @@ void sleep_for(struct timespec duration) {
   if (detach) {
     assert(get_scheduler()->rt != nullptr);
     _scheduler_detach_processor(sched);
-    printf("[TH:%zu] processor detached\n", pthread_self());
+    _FIBER_LOG_AS_THREAD("processor detached");
   }
 
   // nanosleep(&duration, nullptr);
@@ -211,18 +213,19 @@ void sleep_for(struct timespec duration) {
     assert(get_scheduler()->proc == nullptr);
     assert(get_scheduler()->rt != nullptr);
     _scheduler_get_free_processor(sched);
-    printf("[TH:%zu] processor attached\n", pthread_self());
+    _FIBER_LOG_AS_THREAD("processor attached");
   }
 }
 
+void _runtime_global_queue_add_fiber(struct runtime* rt, fiber_t* fb);
 bool scheduler_add_fiber(struct scheduler* sched, fiber_f f) {
   if (sched == nullptr) {
-    fprintf(stderr, "schdeuler_add_fiber error: sched nullptr\n");
+    _FIBER_LOG_ERROR("schdeuler_add_fiber error: sched nullptr");
     exit(EXIT_FAILURE);
   }
 
   if (sched->proc == nullptr) {
-    fprintf(stderr, "schdeuler_add_fiber error: scheduler not attached to any processor\n");
+    _FIBER_LOG_ERROR("schdeuler_add_fiber error: scheduler not attached to any processor");
     exit(EXIT_FAILURE);
   }
 
@@ -232,14 +235,20 @@ bool scheduler_add_fiber(struct scheduler* sched, fiber_f f) {
 
   fiber_t* fb = queue_pop(&sched->proc->free_list);
   if (fb != nullptr) {
-    printf("[TH:%zu] got new fiber context from free queue\n", pthread_self());
+    _FIBER_LOG_AS_THREAD("got new fiber context from free queue");
     _fiber_reset(fb, f);
-    queue_push(&sched->proc->local_run_queue, fb);
-    return true;
   }
+  else {
+    fb = _allocate_fiber(f);
+  }
+  assert(fb != nullptr);
 
-  fb = _allocate_fiber(f);
-  queue_push(&sched->proc->local_run_queue, fb);
+  if (sched->proc->local_run_queue.count > 255) {
+    _runtime_global_queue_add_fiber(sched->rt, fb);
+  }
+  else {
+    queue_push(&sched->proc->local_run_queue, fb);
+  }
   return true;
 }
 bool go(fiber_f f) {
@@ -281,7 +290,7 @@ void _scheduler_try_fiber_steal(struct scheduler* sched) {
     struct queue stealed = queue_batch_pop(&target_proc->local_run_queue, (target_proc->local_run_queue.count + 1) / 2);
     queue_batch_push(&sched->proc->local_run_queue, &stealed);
 
-    printf("[TH:%zu] stealed from detached processor\n", pthread_self());
+    _FIBER_LOG_AS_THREAD("stealed from detached processor");
   }
   else {
     if (sched->stealing_backoff >= g_stealing_backoff_max) {
@@ -317,7 +326,7 @@ fiber_t* _scheduler_get_executable_fiber(struct scheduler* sched) {
   for (;;) {
     if (sched->proc == nullptr) {
       if (!_scheduler_get_free_processor(sched)) {
-        printf("[TH:%zu] failed to get processor\n", pthread_self());
+        _FIBER_LOG_AS_THREAD("failed to get processor");
         goto sleep;
       }
       assert(sched->proc != nullptr);
@@ -334,7 +343,7 @@ fiber_t* _scheduler_get_executable_fiber(struct scheduler* sched) {
       size_t to_batch = (rt->global_run_queue.count + 1) / 2;
 
       struct queue batch = queue_batch_pop(&rt->global_run_queue, to_batch);
-      printf("[TH:%zu] batched from global queue - %zu fibers\n", pthread_self(), batch.count);
+      _FIBER_LOG_AS_THREAD("batched from global queue - %zu fibers", batch.count);
       queue_batch_push(&sched->proc->local_run_queue, &batch);
       // Q_LOG_TRACE(g_rt_logger, "[TH:%zu] local queue count after moving from global queue = %zu", pthread_self(), sched->proc->local_run_queue.count);
 
@@ -345,7 +354,7 @@ fiber_t* _scheduler_get_executable_fiber(struct scheduler* sched) {
     _scheduler_try_fiber_steal(sched);
     if (sched->proc->local_run_queue.count != 0) {
       mutex_try_unlock(grq_mtx);
-      printf("[TH:%zu] get stealed - %zu fibers\n", pthread_self(), sched->proc->local_run_queue.count);
+      _FIBER_LOG_AS_THREAD("get stealed - %zu fibers", sched->proc->local_run_queue.count);
       continue;
     }
 
@@ -358,13 +367,11 @@ fiber_t* _scheduler_get_executable_fiber(struct scheduler* sched) {
     if (rt->sleep_count == rt->threads_count - 1) {
       mutex_try_unlock(grq_mtx);
       _runtime_send_stop_signal(rt);
-      printf("Last thread exits\n");
+      _FIBER_LOG("Last thread exits");
       return nullptr;
     }
 
   sleep:
-    // printf("%zu: going to sleep\n", pthread_self());
-    // Q_LOG_TRACE(g_rt_logger, "[TH:%zu] going to sleep", pthread_self());
     rt->sleep_count += 1;
     pthread_cond_wait(grq_cnd, grq_mtx);
     rt->sleep_count -= 1;
@@ -374,7 +381,7 @@ fiber_t* _scheduler_get_executable_fiber(struct scheduler* sched) {
   unreachable();
 }
 
-void _runtime_add_fiber(struct runtime* rt, fiber_t* fb) {
+void _runtime_global_queue_add_fiber(struct runtime* rt, fiber_t* fb) {
   mutex_try_lock(&rt->rt_mtx);
 
   // fiber_t* fb = _allocate_fiber(f);
@@ -424,13 +431,15 @@ void* _scheduler_start_runtime_loop(void* _rt) {
 
     swap_context(&fb->_caller_ctx, &fb->_ctx);
     if (fb->_is_done) {
-      printf("[TH:%zu] pushing completed fiber to free queue\n", pthread_self());
+      _FIBER_LOG_AS_THREAD("pushing completed fiber to free queue");
       queue_push(&sched->proc->free_list, fb);
     }
   }
 
-  printf("[TH:%zu] shutdown\n", pthread_self());
-  // _scheduler_shutdown();
+  _FIBER_LOG_AS_THREAD("shutdown");
+
+  sched->stealing_backoff = 0;
+  sched->proc = nullptr;
 
   return nullptr;
 }
@@ -490,11 +499,11 @@ struct runtime* allocate_runtime(fiber_f start_f) {
 
 void free_runtime(struct runtime* rt) {
   if (pthread_mutex_destroy(&rt->rt_mtx) == EBUSY) {
-    fprintf(stderr, "Cannot destroy mutex because it is currently locked\n");
+    _FIBER_LOG_ERROR("Cannot destroy mutex because it is currently locked");
     exit(EXIT_FAILURE);
   }
   if (pthread_cond_destroy(&rt->rt_cnd) != 0) {
-    fprintf(stderr, "Cannot destroy cond because some threads are currently waiting on it\n");
+    _FIBER_LOG_ERROR("Cannot destroy cond because some threads are currently waiting on it");
     exit(EXIT_FAILURE);
   }
 
@@ -510,16 +519,16 @@ void free_runtime(struct runtime* rt) {
 
 void runtime_start(struct runtime* rt) {
   if (rt == nullptr) {
-    fprintf(stderr, "runtime_start error: null runtime pointer argument\n");
+    _FIBER_LOG_ERROR("runtime_start error: null runtime pointer argument");
     exit(EXIT_FAILURE);
   }
-  printf("threads count = %zu\n", rt->threads_count);
+  _FIBER_LOG("threads count = %zu", rt->threads_count);
 
   for (size_t i = 0; i < rt->threads_count; ++i) {
 
     int err = pthread_create(&rt->threads[i], nullptr, &_scheduler_start_runtime_loop, rt);
     if (err != 0) {
-      fprintf(stderr, "pthread_create error: %s\n", strerror(err));
+      _FIBER_LOG_ERROR("pthread_create error: %s", strerror(err));
       exit(EXIT_FAILURE);
     }
   }
@@ -532,15 +541,15 @@ void runtime_run(struct runtime* rt) {
   for (size_t i = 0; i < rt->threads_count; ++i) {
     int err = pthread_join(rt->threads[i], nullptr);
     if (err != 0) {
-      fprintf(stderr, "thread join error: %s\n", strerror(err));
+      _FIBER_LOG_ERROR("thread join error: %s", strerror(err));
       exit(EXIT_FAILURE);
     }
   }
-  printf("===runtime stoped===\n");
+  _FIBER_LOG("===runtime stoped===");
 }
 
 void _scheduler_shutdown() {
-  printf("%zu: shutdown\n", pthread_self());
+  _FIBER_LOG_AS_THREAD("shutdown");
 
   struct scheduler* sched = get_scheduler();
 
@@ -558,7 +567,7 @@ void _runtime_send_stop_signal(struct runtime* rt) {
 
 void runtime_graceful_stop(struct runtime* rt) {
   if (rt == nullptr) {
-    fprintf(stderr, "runtime_graceful_stop error: null runtime pointer argument\n");
+    _FIBER_LOG_ERROR("runtime_graceful_stop error: null runtime pointer argument");
     exit(EXIT_FAILURE);
   }
 
@@ -567,11 +576,11 @@ void runtime_graceful_stop(struct runtime* rt) {
   for (size_t i = 0; i < rt->threads_count; ++i) {
     int err = pthread_join(rt->threads[i], nullptr);
     if (err != 0) {
-      fprintf(stderr, "thread join error: %s\n", strerror(err));
+      _FIBER_LOG_ERROR("thread join error: %s", strerror(err));
       exit(EXIT_FAILURE);
     }
   }
-  printf("===runtime stoped===\n");
+  _FIBER_LOG("===runtime stoped===");
 }
 
 
